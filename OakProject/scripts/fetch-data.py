@@ -103,9 +103,9 @@ def _upsert_species(db: Session, species_list: list) -> None:
 def _parse_date(date_str: str | None) -> date | None:
     if not date_str:
         return None
-    for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
+    for fmt, length in (("%Y-%m-%d", 10), ("%Y-%m", 7), ("%Y", 4)):
         try:
-            return datetime.strptime(date_str[:len(fmt)], fmt).date()
+            return datetime.strptime(date_str[:length], fmt).date()
         except ValueError:
             continue
     return None
