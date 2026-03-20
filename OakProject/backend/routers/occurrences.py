@@ -1,5 +1,6 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from backend.db import get_db
 from backend.models import Observation, Image
@@ -113,6 +114,49 @@ def species_photos(species_id: str, db: Session = Depends(get_db)):
         }
         for img in rows
     ]
+
+
+@router.get("/points/{species_id}")
+def species_points(species_id: str, limit: int = 3000, db: Session = Depends(get_db)):
+    """
+    Lightweight map endpoint. Returns only the fields the map needs:
+    lat, lon, source, observer, obs_date — as flat arrays to minimise payload.
+
+    When the species has more than `limit` records, a random spatial sample
+    is returned so the map still shows representative coverage.
+    """
+    base = db.query(Observation).filter(
+        Observation.species_id == species_id,
+        Observation.latitude.isnot(None),
+        Observation.longitude.isnot(None),
+    )
+    total = base.with_entities(func.count(Observation.obs_id)).scalar()
+
+    q = base.with_entities(
+        Observation.latitude,
+        Observation.longitude,
+        Observation.source,
+        Observation.observer,
+        Observation.obs_date,
+    )
+
+    sampled = total > limit
+    if sampled:
+        q = q.order_by(func.random())
+
+    rows = q.limit(limit).all()
+
+    return {
+        "species_id": species_id,
+        "total": total,
+        "returned": len(rows),
+        "sampled": sampled,
+        # Each point: [lat, lon, source, observer, date]
+        "points": [
+            [r[0], r[1], r[2], r[3], r[4].isoformat() if r[4] else None]
+            for r in rows
+        ],
+    }
 
 
 @router.post("/occurrences/{obs_id}/curate")

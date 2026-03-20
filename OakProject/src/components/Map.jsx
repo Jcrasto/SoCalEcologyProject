@@ -1,5 +1,7 @@
-import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet'
-import { useEffect, useState } from 'react'
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet'
+import MarkerClusterGroup from 'react-leaflet-cluster'
+import 'react-leaflet-cluster/dist/assets/MarkerCluster.css'
+import { useEffect, useState, useMemo } from 'react'
 import 'leaflet/dist/leaflet.css'
 import L from 'leaflet'
 
@@ -13,7 +15,6 @@ L.Icon.Default.mergeOptions({
 const SOCAL_CENTER = [34.0, -117.5]
 const SOCAL_ZOOM = 8
 
-// One distinct color per species (by index into the full 8-species array)
 const SPECIES_COLORS = [
   '#2563eb', // Coast Live Oak   — blue
   '#dc2626', // Engelmann Oak    — red
@@ -29,6 +30,34 @@ function getColor(index) {
   return SPECIES_COLORS[index % SPECIES_COLORS.length]
 }
 
+// Module-level icon cache — avoids recreating L.divIcon on every render
+const _iconCache = {}
+function getMarkerIcon(color) {
+  if (!_iconCache[color]) {
+    _iconCache[color] = L.divIcon({
+      className: '',
+      html: `<div style="width:10px;height:10px;border-radius:50%;background:${color};border:1.5px solid rgba(255,255,255,0.85);box-shadow:0 1px 3px rgba(0,0,0,0.4)"></div>`,
+      iconSize: [10, 10],
+      iconAnchor: [5, 5],
+    })
+  }
+  return _iconCache[color]
+}
+
+// Returns a cluster icon creator function for a given species color
+function makeClusterIcon(color) {
+  return (cluster) => {
+    const n = cluster.getChildCount()
+    const size = n < 10 ? 28 : n < 100 ? 36 : 44
+    return L.divIcon({
+      className: '',
+      html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:700;border:2.5px solid white;box-shadow:0 1px 5px rgba(0,0,0,0.35)">${n}</div>`,
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size / 2],
+    })
+  }
+}
+
 // Tells Leaflet to remeasure its container after it becomes visible.
 function MapResizer({ visible }) {
   const map = useMap()
@@ -38,8 +67,11 @@ function MapResizer({ visible }) {
   return null
 }
 
-function SpeciesRow({ sp, index, isActive, isSelected, onToggle, onSelect, count, loading }) {
+function SpeciesRow({ sp, index, isActive, isSelected, onToggle, onSelect, data, loading }) {
   const color = getColor(index)
+  const count = data?.total ?? 0
+  const sampled = data?.sampled
+
   return (
     <div className={`rounded-lg border transition-all ${isSelected ? 'border-oak-400 bg-oak-50' : 'border-transparent hover:bg-gray-50'}`}>
       <div className="flex items-center gap-2 px-2 py-2">
@@ -55,31 +87,39 @@ function SpeciesRow({ sp, index, isActive, isSelected, onToggle, onSelect, count
           <div className="text-sm font-medium leading-tight truncate text-gray-900">{sp.commonName}</div>
           <div className="text-xs italic truncate text-gray-400">{sp.scientificName}</div>
         </button>
-        <span className="text-xs text-gray-400 flex-shrink-0 w-6 text-right">
-          {loading ? '…' : count > 0 ? count : ''}
-        </span>
+        <div className="flex-shrink-0 text-right">
+          {loading ? (
+            <span className="text-xs text-gray-400">…</span>
+          ) : count > 0 ? (
+            <span className="text-xs text-gray-400">
+              {count.toLocaleString()}
+              {sampled && <span title="Map shows a representative sample" className="ml-0.5 text-amber-500">*</span>}
+            </span>
+          ) : null}
+        </div>
       </div>
     </div>
   )
 }
 
 export default function MapView({ species, visible = true }) {
-  const [activeIds, setActiveIds] = useState(() => new Set(species.map(s => s.id)))
+  const [activeIds, setActiveIds] = useState(() => new Set()) // start empty — load on demand
   const [selectedSpecies, setSelectedSpecies] = useState(null)
-  const [occurrences, setOccurrences] = useState({})  // species_id → GeoJSON features[]
+  // occurrences: { species_id → { total, returned, sampled, points: [lat,lon,src,observer,date][] } }
+  const [occurrences, setOccurrences] = useState({})
   const [loadingIds, setLoadingIds] = useState(new Set())
 
-  // Fetch occurrence data from backend for any newly-activated species
+  // Fetch slim point data for any newly-activated species
   useEffect(() => {
     species.forEach(sp => {
       if (!activeIds.has(sp.id)) return
       if (occurrences[sp.id] !== undefined || loadingIds.has(sp.id)) return
 
       setLoadingIds(prev => new Set([...prev, sp.id]))
-      fetch(`/api/distribution/${sp.id}`)
-        .then(r => r.ok ? r.json() : { features: [] })
-        .then(data => setOccurrences(prev => ({ ...prev, [sp.id]: data.features || [] })))
-        .catch(() => setOccurrences(prev => ({ ...prev, [sp.id]: [] })))
+      fetch(`/api/points/${sp.id}?limit=1000`)
+        .then(r => r.ok ? r.json() : { total: 0, returned: 0, sampled: false, points: [] })
+        .then(data => setOccurrences(prev => ({ ...prev, [sp.id]: data })))
+        .catch(() => setOccurrences(prev => ({ ...prev, [sp.id]: { total: 0, returned: 0, sampled: false, points: [] } })))
         .finally(() => setLoadingIds(prev => { const n = new Set(prev); n.delete(sp.id); return n }))
     })
   }, [activeIds, species])
@@ -101,7 +141,8 @@ export default function MapView({ species, visible = true }) {
     setActiveIds(allOn ? new Set() : new Set(species.map(s => s.id)))
   }
 
-  const totalPoints = Object.values(occurrences).reduce((n, f) => n + f.length, 0)
+  const totalPoints = Object.values(occurrences).reduce((n, d) => n + (d.total || 0), 0)
+  const anySampled = Object.values(occurrences).some(d => d.sampled)
 
   return (
     <div className="flex" style={{ height: '100%', width: '100%' }}>
@@ -112,11 +153,14 @@ export default function MapView({ species, visible = true }) {
           <div>
             <h3 className="font-semibold text-gray-800 text-sm">Species Layers</h3>
             <p className="text-xs text-gray-400">
-              {totalPoints > 0 ? `${totalPoints} observations` : 'iNat · GBIF observations'}
+              {totalPoints > 0 ? `${totalPoints.toLocaleString()} observations` : 'iNat · GBIF observations'}
             </p>
+            {anySampled && (
+              <p className="text-xs text-amber-500 mt-0.5">* map shows sampled subset</p>
+            )}
           </div>
           <button onClick={toggleAll} className="text-xs text-oak-600 hover:text-oak-800 font-medium">
-            {species.every(s => activeIds.has(s.id)) ? 'Hide all' : 'Show all'}
+            {activeIds.size === species.length ? 'Hide all' : 'Show all'}
           </button>
         </div>
 
@@ -130,7 +174,7 @@ export default function MapView({ species, visible = true }) {
               isSelected={selectedSpecies?.id === sp.id}
               onToggle={() => toggleSpecies(sp.id)}
               onSelect={() => selectSpecies(sp)}
-              count={(occurrences[sp.id] || []).length}
+              data={occurrences[sp.id]}
               loading={loadingIds.has(sp.id)}
             />
           ))}
@@ -156,9 +200,12 @@ export default function MapView({ species, visible = true }) {
                 ⚠ {selectedSpecies.cnpsRank.split('—')[0].trim()}
               </div>
             )}
-            {occurrences[selectedSpecies.id] !== undefined && (
+            {occurrences[selectedSpecies.id] && (
               <div className="mt-2 text-xs text-gray-500">
-                {(occurrences[selectedSpecies.id] || []).length} observations in database
+                {occurrences[selectedSpecies.id].total.toLocaleString()} observations in database
+                {occurrences[selectedSpecies.id].sampled && (
+                  <span className="text-amber-500"> · showing {occurrences[selectedSpecies.id].returned.toLocaleString()} on map</span>
+                )}
               </div>
             )}
           </div>
@@ -170,7 +217,6 @@ export default function MapView({ species, visible = true }) {
         <MapContainer center={SOCAL_CENTER} zoom={SOCAL_ZOOM} style={{ height: '100%', width: '100%' }}>
           <MapResizer visible={visible} />
 
-          {/* CartoDB Positron — clean base for ecological data */}
           <TileLayer
             url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
@@ -178,46 +224,56 @@ export default function MapView({ species, visible = true }) {
             maxZoom={19}
           />
 
-          {/* Occurrence markers fetched from backend API */}
+          {/* One MarkerClusterGroup per species so cluster colors stay distinct */}
           {species.map((sp, i) => {
             if (!activeIds.has(sp.id)) return null
-            const features = occurrences[sp.id] || []
+            const data = occurrences[sp.id]
+            if (!data?.points?.length) return null
             const color = getColor(i)
-            return features.map((f, j) => {
-              const [lon, lat] = f.geometry?.coordinates || []
-              if (!lat || !lon) return null
-              return (
-                <CircleMarker
-                  key={`${sp.id}-${j}`}
-                  center={[lat, lon]}
-                  radius={5}
-                  pathOptions={{ color, fillColor: color, fillOpacity: 0.75, weight: 1 }}
-                >
-                  <Popup>
-                    <div className="text-xs space-y-0.5">
-                      <div className="font-semibold">{sp.commonName}</div>
-                      {f.properties?.observer && <div>Observer: {f.properties.observer}</div>}
-                      {f.properties?.obs_date && <div>Date: {f.properties.obs_date}</div>}
-                      {f.properties?.source && <div className="text-gray-500 capitalize">Source: {f.properties.source}</div>}
-                    </div>
-                  </Popup>
-                </CircleMarker>
-              )
-            })
+            const markerIcon = getMarkerIcon(color)
+            const clusterIcon = makeClusterIcon(color)
+
+            return (
+              <MarkerClusterGroup
+                key={sp.id}
+                iconCreateFunction={clusterIcon}
+                chunkedLoading
+                maxClusterRadius={50}
+                spiderfyOnMaxZoom
+                showCoverageOnHover={false}
+              >
+                {data.points.map((pt, j) => (
+                  <Marker
+                    key={j}
+                    position={[pt[0], pt[1]]}
+                    icon={markerIcon}
+                  >
+                    <Popup>
+                      <div className="text-xs space-y-0.5">
+                        <div className="font-semibold">{sp.commonName}</div>
+                        {pt[3] && <div>Observer: {pt[3]}</div>}
+                        {pt[4] && <div>Date: {pt[4]}</div>}
+                        {pt[2] && <div className="text-gray-500 capitalize">Source: {pt[2]}</div>}
+                      </div>
+                    </Popup>
+                  </Marker>
+                ))}
+              </MarkerClusterGroup>
+            )
           })}
         </MapContainer>
 
-        {/* Legend — only shows species with loaded observations */}
+        {/* Legend */}
         {totalPoints > 0 && (
           <div className="absolute bottom-6 right-3 bg-white/90 backdrop-blur-sm rounded-lg shadow-md border border-gray-200 p-2.5 text-xs z-[1000]">
             {species.map((sp, i) => {
-              const count = (occurrences[sp.id] || []).length
-              if (!activeIds.has(sp.id) || count === 0) return null
+              const data = occurrences[sp.id]
+              if (!activeIds.has(sp.id) || !data?.total) return null
               return (
                 <div key={sp.id} className="flex items-center gap-1.5 py-0.5">
                   <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: getColor(i) }} />
                   <span className="text-gray-700">{sp.commonName}</span>
-                  <span className="text-gray-400">({count})</span>
+                  <span className="text-gray-400">({data.total.toLocaleString()}{data.sampled ? '*' : ''})</span>
                 </div>
               )
             })}

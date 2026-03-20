@@ -2,10 +2,14 @@ import { useState } from 'react'
 import SpeciesCard from './components/SpeciesCard.jsx'
 import SpeciesDetail from './components/SpeciesDetail.jsx'
 import MapView from './components/Map.jsx'
+import DataManagement from './components/DataManagement.jsx'
 import species from './data/species.json'
 
+// true when running `npm run dev`; false in production builds
+const IS_DEV = import.meta.env.DEV
+
 export default function App() {
-  const [view, setView] = useState('browse') // 'browse' | 'map' | 'detail'
+  const [view, setView] = useState('browse') // 'browse' | 'map' | 'detail' | 'data'
   const [selectedSpecies, setSelectedSpecies] = useState(null)
 
   function handleSelectSpecies(sp) {
@@ -40,6 +44,15 @@ export default function App() {
             >
               Map
             </button>
+            {IS_DEV && (
+              <button
+                onClick={() => setView('data')}
+                className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${view === 'data' ? 'bg-amber-600 text-white' : 'text-amber-300 hover:text-white'}`}
+                title="Local dev only"
+              >
+                Data Management
+              </button>
+            )}
           </nav>
         </div>
       </header>
@@ -56,6 +69,18 @@ export default function App() {
       {view !== 'map' && (
         <div className="flex-1 overflow-y-auto">
           <main className="max-w-7xl mx-auto px-4 py-6">
+            {IS_DEV && view === 'data' && (
+              <div>
+                <div className="flex items-center gap-3 mb-6">
+                  <h2 className="text-2xl font-bold text-oak-900">Data Management</h2>
+                  <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-xs font-medium">
+                    dev only
+                  </span>
+                </div>
+                <DataManagement />
+              </div>
+            )}
+
             {view === 'browse' && (
               <div>
                 <h2 className="text-2xl font-bold text-oak-900 mb-1">Southern California Oak Species</h2>

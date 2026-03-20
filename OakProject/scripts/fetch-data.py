@@ -130,6 +130,10 @@ def _insert_observation(db: Session, source: str, record_id: str, **kwargs) -> b
 # GBIF fetch
 # ---------------------------------------------------------------------------
 
+GBIF_PAGE_SIZE = 300   # GBIF's maximum per-page limit
+GBIF_MAX_OFFSET = 100_000  # GBIF hard cap on offset
+
+
 def fetch_gbif(db: Session, species_list: list) -> None:
     client = httpx.Client(timeout=30)
     bbox = SOCAL_BBOX
@@ -143,59 +147,75 @@ def fetch_gbif(db: Session, species_list: list) -> None:
         print(f"[gbif] Fetching {sp['commonName']} (taxonKey={taxon_key}) …")
         inserted = 0
         skipped = 0
+        offset = 0
+        total = None
 
-        # Build URL manually so bbox range params (32.5,35.8) are not
-        # URL-encoded by httpx — GBIF's parser needs literal commas.
-        url = (
+        # Build the base URL manually so bbox range params are not URL-encoded
+        # by httpx — GBIF's parser requires literal commas in the lat/lon ranges.
+        base_url = (
             f"{GBIF_API}/occurrence/search"
             f"?taxonKey={taxon_key}"
             f"&decimalLatitude={bbox['minLat']},{bbox['maxLat']}"
             f"&decimalLongitude={bbox['minLon']},{bbox['maxLon']}"
             f"&hasCoordinate=true"
             f"&hasGeospatialIssue=false"
-            f"&limit=300"
-            f"&offset=0"
+            f"&limit={GBIF_PAGE_SIZE}"
         )
-        print(f"  [gbif] URL: {url}")
 
-        try:
-            resp = client.get(url)
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.HTTPError as exc:
-            print(f"  [gbif] HTTP error: {exc}")
-            continue
+        while True:
+            url = f"{base_url}&offset={offset}"
+            try:
+                resp = client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+            except httpx.HTTPError as exc:
+                print(f"  [gbif] HTTP error at offset {offset}: {exc}")
+                break
 
-        results = data.get("results", [])
-        print(f"  [gbif] Got {len(results)} records (of {data.get('count', '?')} total)")
+            if total is None:
+                total = data.get("count", "?")
+                print(f"  [gbif] {total} total records in bbox — paginating …")
 
-        for rec in results:
-            lat = rec.get("decimalLatitude")
-            lon = rec.get("decimalLongitude")
-            if lat is None or lon is None:
-                continue
+            results = data.get("results", [])
+            page_num = offset // GBIF_PAGE_SIZE + 1
+            print(f"  [gbif] Page {page_num}: {len(results)} records (offset={offset})")
 
-            ok = _insert_observation(
-                db,
-                source="gbif",
-                record_id=str(rec.get("key", "")),
-                species_id=sp["id"],
-                obs_date=_parse_date(rec.get("eventDate")),
-                observer=rec.get("recordedBy"),
-                basis_of_record=rec.get("basisOfRecord"),
-                coordinate_uncertainty_m=rec.get("coordinateUncertaintyInMeters"),
-                license=rec.get("license"),
-                attribution=rec.get("rightsHolder") or rec.get("institutionCode"),
-                latitude=lat,
-                longitude=lon,
-            )
-            if ok:
-                inserted += 1
-            else:
-                skipped += 1
+            for rec in results:
+                lat = rec.get("decimalLatitude")
+                lon = rec.get("decimalLongitude")
+                if lat is None or lon is None:
+                    continue
 
-        print(f"  [gbif] Inserted={inserted}, Skipped(dup)={skipped}")
-        time.sleep(REQUEST_DELAY)
+                ok = _insert_observation(
+                    db,
+                    source="gbif",
+                    record_id=str(rec.get("key", "")),
+                    species_id=sp["id"],
+                    obs_date=_parse_date(rec.get("eventDate")),
+                    observer=rec.get("recordedBy"),
+                    basis_of_record=rec.get("basisOfRecord"),
+                    coordinate_uncertainty_m=rec.get("coordinateUncertaintyInMeters"),
+                    license=rec.get("license"),
+                    attribution=rec.get("rightsHolder") or rec.get("institutionCode"),
+                    latitude=lat,
+                    longitude=lon,
+                )
+                if ok:
+                    inserted += 1
+                else:
+                    skipped += 1
+
+            if data.get("endOfRecords", True) or not results:
+                break
+
+            offset += GBIF_PAGE_SIZE
+            if offset >= GBIF_MAX_OFFSET:
+                print(f"  [gbif] Reached GBIF offset cap ({GBIF_MAX_OFFSET}), stopping.")
+                break
+
+            time.sleep(REQUEST_DELAY)
+
+        print(f"  [gbif] Done — Inserted={inserted}, Skipped(dup)={skipped}, Total fetched={inserted + skipped}")
 
     client.close()
 
