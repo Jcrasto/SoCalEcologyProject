@@ -104,8 +104,19 @@ export default function SpeciesDetail({ species, onBack }) {
               <h3 className="font-semibold text-oak-900 mb-1">Range</h3>
               <p className="text-oak-600 text-sm mb-4">{species.range}</p>
               {species.cnpsRank && (
-                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 mb-4">
                   <strong>CNPS Status:</strong> {species.cnpsRank}
+                </div>
+              )}
+              {species.historicalContext && (
+                <div className="mb-4">
+                  <h3 className="font-semibold text-oak-900 mb-1">Historical Context</h3>
+                  <p className="text-oak-700 text-sm leading-relaxed">{species.historicalContext}</p>
+                </div>
+              )}
+              {species.conservationConcern && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-800">
+                  <strong>Conservation Concern:</strong> {species.conservationConcern}
                 </div>
               )}
             </div>
@@ -136,6 +147,18 @@ export default function SpeciesDetail({ species, onBack }) {
                 <h3 className="font-semibold text-oak-900 mb-1">Fire Response</h3>
                 <p className="text-oak-700 text-sm">{species.fireResponse}</p>
               </div>
+              {species.ecologicalSignificance && (
+                <div>
+                  <h3 className="font-semibold text-oak-900 mb-1">Ecological Significance</h3>
+                  <p className="text-oak-700 text-sm leading-relaxed">{species.ecologicalSignificance}</p>
+                </div>
+              )}
+              {species.indigenousSignificance && (
+                <div>
+                  <h3 className="font-semibold text-oak-900 mb-1">Indigenous Significance</h3>
+                  <p className="text-oak-700 text-sm leading-relaxed">{species.indigenousSignificance}</p>
+                </div>
+              )}
               <div>
                 <h3 className="font-semibold text-oak-900 mb-1">Associated Species</h3>
                 <div className="flex flex-wrap gap-2">
