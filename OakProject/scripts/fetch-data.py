@@ -10,6 +10,8 @@ Usage (run from OakProject/ root):
     python scripts/fetch-data.py
 """
 
+from __future__ import annotations
+
 import json
 import sys
 import time

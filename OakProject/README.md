@@ -89,10 +89,10 @@ pip install -r backend/requirements.txt
 
 ```bash
 # From OakProject/ root
-uvicorn backend.main:app --reload --port 8000
+uvicorn backend.main:app --reload --port 8008
 ```
 
-API docs available at http://localhost:8000/docs
+API docs available at http://localhost:8008/docs
 
 ### 4. Start the frontend dev server
 
@@ -103,7 +103,7 @@ npm run dev
 App available at http://localhost:5173
 
 The Vite dev server proxies `/api/*` requests to the FastAPI backend at
-`http://localhost:8000`, so both services must be running for full functionality.
+`http://localhost:8008`, so both services must be running for full functionality.
 
 ---
 

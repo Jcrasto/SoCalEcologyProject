@@ -176,7 +176,7 @@ function BackendError() {
   return (
     <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
       <strong>Could not reach backend.</strong> Make sure FastAPI is running:
-      <CodeBlock>uvicorn backend.main:app --reload --port 8000{'\n'}# or: ./dev.sh</CodeBlock>
+      <CodeBlock>uvicorn backend.main:app --reload --port 8008{'\n'}# or: ./dev.sh</CodeBlock>
     </div>
   )
 }
@@ -193,10 +193,10 @@ export default function DataManagement() {
 
   // Fire all 4 requests independently — each section renders as soon as its own data arrives
   useEffect(() => {
-    fetch('/api/admin/stats').then(r => r.json()).then(setStats).catch(() => setStatsError(true))
-    fetch('/api/admin/sources').then(r => r.json()).then(setSources).catch(() => setSourcesError(true))
-    fetch('/api/admin/files').then(r => r.json()).then(setFiles).catch(() => setFilesError(true))
-    fetch('/api/admin/tables').then(r => r.json()).then(setTables).catch(() => setTablesError(true))
+    fetch('/api/admin/stats').then(r => { if (!r.ok) throw new Error(); return r.json() }).then(setStats).catch(() => setStatsError(true))
+    fetch('/api/admin/sources').then(r => { if (!r.ok) throw new Error(); return r.json() }).then(setSources).catch(() => setSourcesError(true))
+    fetch('/api/admin/files').then(r => { if (!r.ok) throw new Error(); return r.json() }).then(setFiles).catch(() => setFilesError(true))
+    fetch('/api/admin/tables').then(r => { if (!r.ok) throw new Error(); return r.json() }).then(setTables).catch(() => setTablesError(true))
   }, [])
 
   const allObsFiles = files ? [...(files.occurrences || []), ...(files.photos || [])] : []
@@ -432,9 +432,9 @@ export default function DataManagement() {
             <div className="font-medium mb-1">API docs (local backend)</div>
             <p className="text-xs text-oak-500">
               The FastAPI backend exposes interactive docs at{' '}
-              <a href="http://localhost:8000/docs" target="_blank" rel="noreferrer"
+              <a href="http://localhost:8008/docs" target="_blank" rel="noreferrer"
                 className="text-blue-600 hover:underline font-mono">
-                http://localhost:8000/docs
+                http://localhost:8008/docs
               </a>
             </p>
           </div>

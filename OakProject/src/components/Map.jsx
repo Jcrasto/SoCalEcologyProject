@@ -1,6 +1,6 @@
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet'
 import MarkerClusterGroup from 'react-leaflet-cluster'
-import 'react-leaflet-cluster/dist/assets/MarkerCluster.css'
+import 'react-leaflet-cluster/lib/assets/MarkerCluster.css'
 import { useEffect, useState, useMemo, useRef } from 'react'
 import 'leaflet/dist/leaflet.css'
 import L from 'leaflet'
@@ -244,6 +244,7 @@ export default function MapView({ species, visible = true }) {
   const [viewMode, setViewMode] = useState('cluster') // 'cluster' | 'heat' | 'points'
   const [yearRange, setYearRange] = useState(null) // null until first data loads
   const [mapBounds, setMapBounds] = useState(null)
+  const [fetchErrors, setFetchErrors] = useState(new Set())
 
   // AbortControllers keyed by species_id — cancelled when species is deactivated or component unmounts
   const abortControllersRef = useRef({})
@@ -268,14 +269,19 @@ export default function MapView({ species, visible = true }) {
 
       setLoadingIds(prev => new Set([...prev, sp.id]))
       fetch(`/api/points/${sp.id}?limit=100000`, { signal: controller.signal })
-        .then(r => r.ok ? r.json() : { total: 0, returned: 0, sampled: false, points: [] })
+        .then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`)
+          return r.json()
+        })
         .then(data => {
           delete abortControllersRef.current[sp.id]
+          setFetchErrors(prev => { const n = new Set(prev); n.delete(sp.id); return n })
           setOccurrences(prev => ({ ...prev, [sp.id]: data }))
         })
         .catch(err => {
           if (err.name === 'AbortError') return
           delete abortControllersRef.current[sp.id]
+          setFetchErrors(prev => new Set([...prev, sp.id]))
           setOccurrences(prev => ({ ...prev, [sp.id]: { total: 0, returned: 0, sampled: false, points: [] } }))
         })
         .finally(() => setLoadingIds(prev => { const n = new Set(prev); n.delete(sp.id); return n }))
@@ -581,6 +587,13 @@ export default function MapView({ species, visible = true }) {
             </button>
           </div>
         </div>
+
+        {/* Backend error banner */}
+        {fetchErrors.size > 0 && (
+          <div className="absolute top-3 left-3 z-[1000] bg-red-50 border border-red-300 text-red-700 text-xs px-3 py-2 rounded-lg shadow max-w-xs">
+            Could not reach backend API. Make sure FastAPI is running on port 8008.
+          </div>
+        )}
 
         {/* Points mode hint */}
         {viewMode === 'points' && totalPoints > 0 && (
