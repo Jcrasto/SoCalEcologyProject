@@ -22,7 +22,7 @@ trap cleanup EXIT INT TERM
 echo "Starting backend  → logs/$( basename "$BACKEND_LOG")"
 cd "$SCRIPT_DIR"
 uv run --with-requirements backend/requirements.txt \
-  uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000 \
+  uvicorn backend.main:app --reload --host 0.0.0.0 --port 8008 \
   > "$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 
@@ -33,7 +33,7 @@ npm --prefix "$SCRIPT_DIR" run dev \
 FRONTEND_PID=$!
 
 echo ""
-echo "  Backend:  http://localhost:8000  (pid $BACKEND_PID)"
+echo "  Backend:  http://localhost:8008  (pid $BACKEND_PID)"
 echo "  Frontend: http://localhost:5173  (pid $FRONTEND_PID)"
 echo ""
 echo "  tail -f logs/backend.log"

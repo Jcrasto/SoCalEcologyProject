@@ -211,3 +211,4 @@ Prompts/
 node_modules/
 
 *.db
+.DS_Store
