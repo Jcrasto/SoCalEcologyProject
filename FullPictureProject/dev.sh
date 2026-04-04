@@ -21,8 +21,7 @@ trap cleanup EXIT INT TERM
 # ── Backend ──────────────────────────────────────────────────────────────────
 echo "Starting backend  → logs/$(basename "$BACKEND_LOG")"
 cd "$SCRIPT_DIR/apps/api"
-uv run --with-requirements requirements.txt \
-  uvicorn main:app --reload --host 0.0.0.0 --port 8009 \
+uv run uvicorn main:app --reload --host 0.0.0.0 --port 8009 \
   > "$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 cd "$SCRIPT_DIR"

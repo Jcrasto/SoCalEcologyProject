@@ -83,6 +83,15 @@ def write_parquet(
     logger.debug("Wrote %d rows to %s", len(df), path)
 
 
+def safe_read_parquet(glob_pattern: str) -> pd.DataFrame:
+    """Read Parquet files matching a glob pattern; returns empty DataFrame if none exist."""
+    import glob as _glob
+    files = _glob.glob(glob_pattern)
+    if not files:
+        return pd.DataFrame()
+    return query(f"SELECT * FROM read_parquet('{glob_pattern}')")
+
+
 def query(sql: str, params=None) -> pd.DataFrame:
     """Execute a SQL statement against the DuckDB singleton and return a DataFrame."""
     con = get_con()
