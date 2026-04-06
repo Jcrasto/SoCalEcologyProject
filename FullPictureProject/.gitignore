@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.env
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Data (Parquet files — large, local only)
+data/flights/
+data/vessels/
+data/earthquakes/
+data/fires/
+data/tides/
+data/weather/
+data/traffic/
+data/satellites/
+data/prices/
+# Keep counties.parquet (small static file)
+!data/counties.parquet
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
