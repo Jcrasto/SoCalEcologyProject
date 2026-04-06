@@ -2,7 +2,7 @@
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import httpx
 import pandas as pd
@@ -14,11 +14,45 @@ from ws import manager
 logger = logging.getLogger(__name__)
 
 OPENSKY_URL = "https://opensky-network.org/api/states/all"
+OPENSKY_TOKEN_URL = (
+    "https://auth.opensky-network.org/auth/realms/opensky-network"
+    "/protocol/openid-connect/token"
+)
 STATE_COLS = [
     "icao24", "callsign", "origin_country", "time_position", "last_contact",
     "lon", "lat", "baro_altitude", "on_ground", "velocity", "true_track",
     "vertical_rate", "sensors", "geo_altitude", "squawk", "spi", "position_source",
 ]
+
+# Cached token state
+_token_cache: dict = {"token": None, "expires_at": datetime.min.replace(tzinfo=timezone.utc)}
+
+
+async def _get_bearer_token(client: httpx.AsyncClient) -> str | None:
+    """Fetch (or return cached) OAuth2 client-credentials token."""
+    client_id = os.getenv("OPENSKY_CLIENT_ID")
+    client_secret = os.getenv("OPENSKY_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return None
+
+    now = datetime.now(timezone.utc)
+    if _token_cache["token"] and now < _token_cache["expires_at"]:
+        return _token_cache["token"]
+
+    resp = await client.post(
+        OPENSKY_TOKEN_URL,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+        },
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    _token_cache["token"] = payload["access_token"]
+    # Refresh a minute before real expiry to avoid races
+    _token_cache["expires_at"] = now + timedelta(seconds=payload.get("expires_in", 300) - 60)
+    return _token_cache["token"]
 
 
 def _df_to_features(df: pd.DataFrame) -> list:
@@ -51,14 +85,11 @@ async def ingest_flights() -> None:
             "lamin": BBOX["lamin"], "lamax": BBOX["lamax"],
             "lomin": BBOX["lomin"], "lomax": BBOX["lomax"],
         }
-        auth = None
-        user = os.getenv("OPENSKY_USERNAME")
-        pwd = os.getenv("OPENSKY_PASSWORD")
-        if user and pwd:
-            auth = (user, pwd)
 
         async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(OPENSKY_URL, params=params, auth=auth)
+            token = await _get_bearer_token(client)
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            resp = await client.get(OPENSKY_URL, params=params, headers=headers)
             resp.raise_for_status()
             data = resp.json()
 

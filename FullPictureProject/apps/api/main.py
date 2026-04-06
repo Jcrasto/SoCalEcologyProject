@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import db
 from ws import manager
-from routers import flights, earthquakes, vessels, weather, fires, tides, satellites, traffic, prices
+from routers import flights, earthquakes, vessels, weather, fires, tides, satellites, traffic, prices, explorer
 from jobs.flights import ingest_flights
 from jobs.earthquakes import ingest_earthquakes
 from jobs.vessels import ingest_vessels
@@ -100,6 +100,7 @@ app.include_router(tides.router,      prefix=PREFIX)
 app.include_router(satellites.router, prefix=PREFIX)
 app.include_router(traffic.router,    prefix=PREFIX)
 app.include_router(prices.router,     prefix=PREFIX)
+app.include_router(explorer.router,   prefix=PREFIX)
 
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────

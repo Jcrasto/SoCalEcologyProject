@@ -60,7 +60,7 @@ export function CesiumGlobe() {
 
     // Add Bing Maps imagery async (Cesium 1.107+ requires fromAssetId())
     if (hasToken) {
-      Cesium.IonImageryProvider.fromAssetId(2)
+      Cesium.IonImageryProvider.fromAssetId(3)
         .then((provider) => {
           if (!viewer.isDestroyed()) viewer.imageryLayers.addImageryProvider(provider)
         })
