@@ -1,116 +1,73 @@
-"""Ingest NOAA NWS weather alerts and observations."""
-
-import logging
-from datetime import datetime, timezone
-
+"""Open-Meteo Historical Weather — no API key required."""
+from __future__ import annotations
+from datetime import date
 import httpx
 import pandas as pd
 
-from db import last_ingestion, write_parquet
+from jobs.base import BaseJob
 
-logger = logging.getLogger(__name__)
+# Default locations: major US metros + SoCal cities
+DEFAULT_LOCATIONS = [
+    {"city": "Los Angeles", "state": "CA", "country": "US", "lat": 34.05, "lon": -118.24},
+    {"city": "San Diego", "state": "CA", "country": "US", "lat": 32.72, "lon": -117.16},
+    {"city": "San Francisco", "state": "CA", "country": "US", "lat": 37.77, "lon": -122.42},
+    {"city": "New York", "state": "NY", "country": "US", "lat": 40.71, "lon": -74.01},
+    {"city": "Chicago", "state": "IL", "country": "US", "lat": 41.85, "lon": -87.65},
+    {"city": "Houston", "state": "TX", "country": "US", "lat": 29.76, "lon": -95.37},
+    {"city": "Phoenix", "state": "AZ", "country": "US", "lat": 33.45, "lon": -112.07},
+    {"city": "Seattle", "state": "WA", "country": "US", "lat": 47.61, "lon": -122.33},
+    {"city": "Denver", "state": "CO", "country": "US", "lat": 39.74, "lon": -104.98},
+    {"city": "Miami", "state": "FL", "country": "US", "lat": 25.77, "lon": -80.20},
+]
 
-NWS_HEADERS = {"User-Agent": "FullPictureProject/1.0 (contact@example.com)"}
-SOCAL_BBOX = (-120.5, 31.0, -115.0, 36.0)
-
-
-async def ingest_weather_alerts() -> None:
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(
-                "https://api.weather.gov/alerts/active?area=CA",
-                headers=NWS_HEADERS,
-            )
-            resp.raise_for_status()
-            fc = resp.json()
-
-        rows = []
-        for feat in fc.get("features", []):
-            props = feat.get("properties", {})
-            geom = feat.get("geometry")
-            rows.append({
-                "alert_id": props.get("id", ""),
-                "event": props.get("event", ""),
-                "severity": props.get("severity", ""),
-                "headline": props.get("headline", ""),
-                "description": str(props.get("description", ""))[:500],
-                "expires": str(props.get("expires", "")),
-                "geometry_json": str(geom) if geom else None,
-            })
-
-        if not rows:
-            return
-
-        now = datetime.now(timezone.utc)
-        df = pd.DataFrame(rows)
-        write_parquet(df, "weather", subdir="alerts", date_str=now.strftime("%Y-%m-%d"))
-        last_ingestion["weather_alerts"] = now
-        logger.debug("Weather alerts: %d active for CA", len(df))
-
-    except Exception as exc:
-        logger.error("ingest_weather_alerts error: %s", exc)
-
-
-# Sample grid points covering SoCal bbox
-_GRID_POINTS = [
-    (32.7, -117.2),  # San Diego
-    (33.5, -118.2),  # Los Angeles
-    (34.0, -118.5),  # Santa Monica
-    (34.4, -119.7),  # Santa Barbara
-    (33.8, -117.9),  # Orange County
-    (33.9, -116.5),  # Palm Springs
+DAILY_VARS = [
+    "temperature_2m_max",
+    "temperature_2m_min",
+    "precipitation_sum",
+    "wind_speed_10m_max",
+    "shortwave_radiation_sum",
 ]
 
 
-async def ingest_weather_obs() -> None:
-    try:
-        rows = []
+class WeatherJob(BaseJob):
+    source_id = "weather"
+    name = "Weather (Open-Meteo)"
+    description = "Daily weather: temp max/min, precipitation, wind speed. Source: Open-Meteo ERA5 reanalysis."
+    category = "Weather"
+    partition = "year_month"
+    requires_key = False
+
+    async def fetch(self, start_date: date, end_date: date) -> pd.DataFrame:
+        records = []
         async with httpx.AsyncClient(timeout=30) as client:
-            for lat, lon in _GRID_POINTS:
-                try:
-                    pt_resp = await client.get(
-                        f"https://api.weather.gov/points/{lat},{lon}",
-                        headers=NWS_HEADERS,
-                    )
-                    if pt_resp.status_code != 200:
-                        continue
-                    pt_data = pt_resp.json()
-                    hourly_url = (
-                        pt_data.get("properties", {})
-                        .get("forecastHourly")
-                    )
-                    if not hourly_url:
-                        continue
+            for loc in DEFAULT_LOCATIONS:
+                params = {
+                    "latitude": loc["lat"],
+                    "longitude": loc["lon"],
+                    "start_date": str(start_date),
+                    "end_date": str(end_date),
+                    "daily": ",".join(DAILY_VARS),
+                    "timezone": "America/New_York",
+                }
+                resp = await client.get(
+                    "https://archive-api.open-meteo.com/v1/archive", params=params
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                daily = data.get("daily", {})
+                dates = daily.get("time", [])
+                for i, d in enumerate(dates):
+                    rec = {
+                        "date": d,
+                        "city": loc["city"],
+                        "state": loc["state"],
+                        "country": loc["country"],
+                        "lat": loc["lat"],
+                        "lon": loc["lon"],
+                    }
+                    for var in DAILY_VARS:
+                        vals = daily.get(var, [])
+                        rec[var] = vals[i] if i < len(vals) else None
+                    records.append(rec)
 
-                    fc_resp = await client.get(hourly_url, headers=NWS_HEADERS)
-                    if fc_resp.status_code != 200:
-                        continue
-                    fc_data = fc_resp.json()
-                    periods = fc_data.get("properties", {}).get("periods", [])
-                    if not periods:
-                        continue
-
-                    p = periods[0]
-                    rows.append({
-                        "lat": lat,
-                        "lon": lon,
-                        "temperature_f": p.get("temperature"),
-                        "wind_speed": p.get("windSpeed", ""),
-                        "wind_direction": p.get("windDirection", ""),
-                        "short_forecast": p.get("shortForecast", ""),
-                        "start_time": p.get("startTime", ""),
-                    })
-                except Exception:
-                    continue
-
-        if not rows:
-            return
-
-        now = datetime.now(timezone.utc)
-        df = pd.DataFrame(rows)
-        write_parquet(df, "weather", subdir="observations", date_str=now.strftime("%Y-%m-%d"))
-        last_ingestion["weather_obs"] = now
-        logger.debug("Weather obs: %d grid points", len(df))
-
-    except Exception as exc:
-        logger.error("ingest_weather_obs error: %s", exc)
+        return pd.DataFrame(records) if records else pd.DataFrame()

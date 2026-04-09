@@ -1,106 +1,224 @@
-"""Database utilities: DuckDB singleton, Parquet read/write helpers."""
-
-import logging
-from datetime import datetime, timezone
+from __future__ import annotations
+import os
 from pathlib import Path
 from typing import Optional
-
 import duckdb
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
+from dotenv import load_dotenv
 
-logger = logging.getLogger(__name__)
+load_dotenv()
 
-# ─── Data directory ───────────────────────────────────────────────────────────
-# Resolves to FullPictureProject/data/ regardless of cwd
-DATA_DIR: Path = Path(__file__).resolve().parent.parent.parent / "data"
-
-# ─── Ingestion timestamps ─────────────────────────────────────────────────────
-last_ingestion: dict[str, datetime] = {}
-
-# ─── DuckDB singleton ─────────────────────────────────────────────────────────
-_connection: Optional[duckdb.DuckDBPyConnection] = None
+DATA_DIR = Path(os.getenv("DATA_DIR", "../../data")).resolve()
+PARQUET_DIR = DATA_DIR / "parquet"
 
 
-def get_con() -> duckdb.DuckDBPyConnection:
-    """Return a module-level singleton DuckDB connection with required extensions."""
-    global _connection
-    if _connection is None:
-        _connection = duckdb.connect(database=":memory:", read_only=False)
-        try:
-            _connection.execute("INSTALL spatial; LOAD spatial;")
-        except Exception as exc:
-            logger.warning("Could not load DuckDB spatial extension: %s", exc)
-        try:
-            _connection.execute("INSTALL json; LOAD json;")
-        except Exception as exc:
-            logger.warning("Could not load DuckDB json extension: %s", exc)
-    return _connection
+def source_dir(source_id: str) -> Path:
+    return PARQUET_DIR / source_id
 
 
-def parquet_path(
-    layer: str,
-    date_str: Optional[str] = None,
-    subdir: Optional[str] = None,
-) -> Path:
-    """
-    Return the Parquet file path for a layer, creating parent directories.
-
-    Layout examples
-    ---------------
-    layer="flights", date_str="2025-01-15"
-        → data/flights/date=2025-01-15/data.parquet
-
-    layer="fires", subdir="detections", date_str="2025-01-15"
-        → data/fires/detections/date=2025-01-15/data.parquet
-
-    layer="satellites", subdir="tle"
-        → data/satellites/tle/data.parquet
-    """
-    base = DATA_DIR / layer
-    if subdir:
-        base = base / subdir
-    if date_str:
-        base = base / f"date={date_str}"
-    base.mkdir(parents=True, exist_ok=True)
-    return base / "data.parquet"
+def get_conn() -> duckdb.DuckDBPyConnection:
+    return duckdb.connect(database=":memory:")
 
 
-def write_parquet(
-    df: pd.DataFrame,
-    layer: str,
-    date_str: Optional[str] = None,
-    subdir: Optional[str] = None,
-) -> None:
-    """Write a DataFrame to the partitioned Parquet store."""
-    if df.empty:
-        logger.debug("write_parquet: empty DataFrame for layer=%s, skipping", layer)
-        return
-    path = parquet_path(layer, date_str=date_str, subdir=subdir)
-    table = pa.Table.from_pandas(df, preserve_index=False)
-    pq.write_table(table, str(path), compression="snappy")
-    logger.debug("Wrote %d rows to %s", len(df), path)
+def parquet_glob(source_id: str) -> str:
+    """Glob pattern to read all parquet files for a source using hive partitioning."""
+    return str(source_dir(source_id) / "**" / "*.parquet")
 
 
-def safe_read_parquet(glob_pattern: str) -> pd.DataFrame:
-    """Read Parquet files matching a glob pattern; returns empty DataFrame if none exist."""
-    import glob as _glob
-    files = _glob.glob(glob_pattern)
-    if not files:
-        return pd.DataFrame()
-    return query(f"SELECT * FROM read_parquet('{glob_pattern}')")
+def source_has_data(source_id: str) -> bool:
+    d = source_dir(source_id)
+    if not d.exists():
+        return False
+    return any(d.rglob("*.parquet"))
 
 
-def query(sql: str, params=None) -> pd.DataFrame:
-    """Execute a SQL statement against the DuckDB singleton and return a DataFrame."""
-    con = get_con()
+def get_source_stats(source_id: str) -> dict:
+    if not source_has_data(source_id):
+        return {"has_data": False, "count": 0, "start_date": None, "end_date": None}
+
+    glob = parquet_glob(source_id)
+    conn = get_conn()
     try:
-        if params:
-            result = con.execute(sql, params)
+        row = conn.execute(
+            f"SELECT COUNT(*) AS cnt, MIN(date) AS start_date, MAX(date) AS end_date "
+            f"FROM read_parquet('{glob}', hive_partitioning=true)"
+        ).fetchone()
+        return {
+            "has_data": True,
+            "count": int(row[0]),
+            "start_date": row[1],
+            "end_date": row[2],
+        }
+    except Exception:
+        return {"has_data": False, "count": 0, "start_date": None, "end_date": None}
+    finally:
+        conn.close()
+
+
+def get_preview(source_id: str, limit: int = 100) -> list[dict]:
+    if not source_has_data(source_id):
+        return []
+
+    glob = parquet_glob(source_id)
+    conn = get_conn()
+    try:
+        df = conn.execute(
+            f"SELECT * FROM read_parquet('{glob}', hive_partitioning=true) "
+            f"ORDER BY date DESC LIMIT {limit}"
+        ).df()
+        return df.to_dict(orient="records")
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def query_data(
+    source_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    city: Optional[str] = None,
+    state: Optional[str] = None,
+    country: Optional[str] = None,
+    group_by: Optional[list[str]] = None,
+    limit: int = 1000,
+) -> list[dict]:
+    if not source_has_data(source_id):
+        return []
+
+    glob = parquet_glob(source_id)
+    conn = get_conn()
+
+    conditions = []
+    if start_date:
+        conditions.append(f"date >= '{start_date}'")
+    if end_date:
+        conditions.append(f"date <= '{end_date}'")
+    if city:
+        conditions.append(f"LOWER(city) = LOWER('{city}')")
+    if state:
+        conditions.append(f"LOWER(state) = LOWER('{state}')")
+    if country:
+        conditions.append(f"LOWER(country) = LOWER('{country}')")
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    try:
+        if group_by:
+            agg_cols = ", ".join(group_by)
+            sql = (
+                f"SELECT {agg_cols}, COUNT(*) AS count "
+                f"FROM read_parquet('{glob}', hive_partitioning=true) "
+                f"{where} GROUP BY {agg_cols} ORDER BY {group_by[0]} LIMIT {limit}"
+            )
         else:
-            result = con.execute(sql)
-        return result.df()
-    except Exception as exc:
-        logger.error("DuckDB query error: %s\nSQL: %s", exc, sql)
-        return pd.DataFrame()
+            sql = (
+                f"SELECT * FROM read_parquet('{glob}', hive_partitioning=true) "
+                f"{where} ORDER BY date DESC LIMIT {limit}"
+            )
+        df = conn.execute(sql).df()
+        return df.to_dict(orient="records")
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def build_conn_with_views(source_ids: list[str]) -> duckdb.DuckDBPyConnection:
+    """Open a connection and register a view for every source that has parquet data."""
+    conn = duckdb.connect(database=":memory:")
+    for sid in source_ids:
+        if source_has_data(sid):
+            glob = parquet_glob(sid)
+            conn.execute(
+                f"CREATE OR REPLACE VIEW {sid} AS "
+                f"SELECT * FROM read_parquet('{glob}', hive_partitioning=true)"
+            )
+    return conn
+
+
+def execute_sql(sql: str, source_ids: list[str]) -> dict:
+    """Execute arbitrary SQL with views registered for each loaded source."""
+    import time
+    conn = build_conn_with_views(source_ids)
+    start = time.perf_counter()
+    try:
+        rel = conn.execute(sql)
+        # Capture DuckDB column types before converting to DataFrame
+        type_map = {desc[0]: str(desc[1]) for desc in (conn.description or [])}
+        df = rel.df()
+        elapsed = time.perf_counter() - start
+        # Use pandas' own JSON serialiser to handle all numpy/date scalar types,
+        # then parse back to plain Python — avoids FastAPI encoder issues entirely.
+        import json
+        rows = json.loads(df.to_json(orient="records", date_format="iso", default_handler=str))
+        columns = [{"name": col, "type": type_map.get(col, str(df[col].dtype))} for col in df.columns]
+        return {
+            "ok": True,
+            "columns": columns,
+            "rows": rows,
+            "row_count": len(rows),
+            "elapsed_ms": round(elapsed * 1000, 1),
+        }
+    except Exception as e:
+        elapsed = time.perf_counter() - start
+        return {"ok": False, "error": str(e), "elapsed_ms": round(elapsed * 1000, 1)}
+    finally:
+        conn.close()
+
+
+def get_schemas(source_ids: list[str]) -> list[dict]:
+    """Return column names + types for every source that has data."""
+    schemas = []
+    for sid in source_ids:
+        if not source_has_data(sid):
+            continue
+        conn = get_conn()
+        try:
+            glob = parquet_glob(sid)
+            conn.execute(
+                f"SELECT * FROM read_parquet('{glob}', hive_partitioning=true) LIMIT 0"
+            )
+            columns = [
+                {"name": desc[0], "type": str(desc[1])}
+                for desc in (conn.description or [])
+            ]
+            schemas.append({"table": sid, "columns": columns})
+        except Exception:
+            pass
+        finally:
+            conn.close()
+    return schemas
+
+
+def save_dataframe(df: pd.DataFrame, source_id: str, partition: str) -> int:
+    """
+    Save a DataFrame to partitioned parquet files.
+    partition: "year_month" or "year"
+    DataFrame must have a 'date' column (datetime or date).
+    """
+    if df.empty:
+        return 0
+
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+
+    if partition == "year_month":
+        df["_year"] = df["date"].dt.year
+        df["_month"] = df["date"].dt.month
+        groups = df.groupby(["_year", "_month"])
+        for (year, month), chunk in groups:
+            out = source_dir(source_id) / f"year={year}" / f"month={month:02d}"
+            out.mkdir(parents=True, exist_ok=True)
+            chunk.drop(columns=["_year", "_month"]).to_parquet(
+                out / "data.parquet", index=False
+            )
+    else:  # year
+        df["_year"] = df["date"].dt.year
+        groups = df.groupby("_year")
+        for year, chunk in groups:
+            out = source_dir(source_id) / f"year={year}"
+            out.mkdir(parents=True, exist_ok=True)
+            chunk.drop(columns=["_year"]).to_parquet(out / "data.parquet", index=False)
+
+    return len(df)
